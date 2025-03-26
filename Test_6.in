@@ -1,0 +1,17 @@
+// Auftrag Test 6 - Medium set, many squares, medium depth
+900 8
+100, 100, 1, Square 1
+150, 150, 2, Square 2
+200, 200, 3, Square 3
+100, 100, 4, Square 4
+250, 250, 5, Square 5
+150, 150, 6, Square 6
+210, 297, 7, Rect 1
+420, 297, 8, Rect 2
+100, 100, 9, Square 9
+300, 300, 10, Square 10
+50, 50, 11, Square 11
+150, 150, 12, Square 12
+200, 200, 13, Square 13
+100, 500, 14, Tall 1
+600, 100, 15, Wide 1

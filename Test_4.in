@@ -1,0 +1,7 @@
+// Auftrag Test 4 - Small set, low depth
+900 5
+150, 150, 1, Part A
+200, 300, 2, Part B
+400, 100, 3, Part C
+210, 297, 4, Part D
+300, 300, 5, Part E

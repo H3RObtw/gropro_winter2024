@@ -1,0 +1,27 @@
+// Auftrag Test 8 - Large set (25), lower depth for speed
+900 6
+100, 100, 1, Ord A
+200, 150, 2, Ord B
+150, 200, 3, Ord C
+300, 100, 4, Ord D
+100, 300, 5, Ord E
+250, 250, 6, Ord F
+50, 400, 7, Ord G
+400, 50, 8, Ord H
+210, 297, 9, Ord I
+297, 210, 10, Ord J
+120, 180, 11, Ord K
+180, 120, 12, Ord L
+330, 110, 13, Ord M
+110, 330, 14, Ord N
+220, 220, 15, Ord O
+80, 80, 16, Ord P
+450, 150, 17, Ord Q
+150, 450, 18, Ord R
+600, 100, 19, Ord S
+100, 600, 20, Ord T
+270, 270, 21, Ord U
+190, 310, 22, Ord V
+310, 190, 23, Ord W
+500, 120, 24, Ord X
+120, 500, 25, Ord Y

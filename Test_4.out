@@ -1,0 +1,18 @@
+// Auftrag Test 4 - Small set, low depth
+Benötgte Länge: 36.0cm
+Genutzte Flaeche: 84.84%
+
+Positionierung der Kundenaufträge:
+0 210 150 360 - 1 - Part A
+297 0 597 200 - 2 - Part B
+150 210 550 310 - 3 - Part C
+0 0 297 210 - 4 - Part D
+597 0 897 300 - 5 - Part E
+
+Verbleibende Andockpunkte:
+897 0
+297 200
+550 210
+597 300
+150 310
+0 360

@@ -1,0 +1,33 @@
+// Auftrag Test 6 - Medium set, many squares, medium depth
+Benötgte Länge: 82.0cm
+Genutzte Flaeche: 85.31%
+
+Positionierung der Kundenaufträge:
+200 0 300 100 - 1 - Square 1
+300 0 450 150 - 2 - Square 2
+0 0 200 200 - 3 - Square 3
+200 100 300 200 - 4 - Square 4
+300 150 550 400 - 5 - Square 5
+450 0 600 150 - 6 - Square 6
+0 200 297 410 - 7 - Rect 1
+600 0 897 420 - 8 - Rect 2
+300 420 400 520 - 9 - Square 9
+0 420 300 720 - 10 - Square 10
+300 520 350 570 - 11 - Square 11
+350 520 500 670 - 12 - Square 12
+500 520 700 720 - 13 - Square 13
+400 420 900 520 - 14 - Tall 1
+0 720 600 820 - 15 - Wide 1
+
+Verbleibende Andockpunkte:
+897 0
+550 150
+297 200
+300 400
+0 410
+900 420
+700 520
+300 570
+350 670
+600 720
+0 820
