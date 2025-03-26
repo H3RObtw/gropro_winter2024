@@ -6,6 +6,8 @@ import model.Point;
 import verarbeitung.PlacementService;
 
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.util.List;
 import java.util.Set;
 
@@ -40,7 +42,34 @@ public class Main {
         // --- Verarbeitung ---
         System.out.println("\nStarting placement optimization...");
         PlacementService placementService = new PlacementService(inputData.rollWidth());
+
+        // Implement Timer for performance
+        ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
+        if (!threadMXBean.isCurrentThreadCpuTimeSupported()) {
+            System.out.println("CPU time measurement not supported.");
+        } else {
+            threadMXBean.setThreadCpuTimeEnabled(true);
+        }
+
+        long startTime = System.nanoTime();
+        long startCpuTime = threadMXBean.getCurrentThreadCpuTime();
+
         PlacementResult result = placementService.findOptimalPlacement(inputData.orders(), inputData.optimizationDepth());
+
+        long endTime = System.nanoTime();
+        long endCpuTime = threadMXBean.getCurrentThreadCpuTime();
+
+        long elapsedTime = (endTime - startTime); // in nanoseconds
+        double elapsedTimeInSeconds = (double) elapsedTime / 1_000_000_000.0;
+
+        long cpuTime = (endCpuTime - startCpuTime);
+        double cpuTimeInSeconds = (double) cpuTime / 1_000_000_000.0;
+
+        System.out.println(
+                "Optimization finished in: " + elapsedTimeInSeconds + " seconds (" + elapsedTime + " nanoseconds)");
+        System.out.println(
+                "CPU time used: " + cpuTimeInSeconds + " seconds (" + cpuTime + " nanoseconds)");
+
         System.out.println("Optimization finished.");
 
         if (result == null) {
