@@ -111,4 +111,8 @@ public class CustomerOrder {
         this.currentWidth = this.isRotated ? originalHeight : originalWidth;
         this.currentHeight = this.isRotated ? originalWidth : originalHeight;
     }
+
+    public boolean isPlaced() {
+        return isPlaced;
+    }
 }

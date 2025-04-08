@@ -41,7 +41,7 @@ public class Main {
 
         // --- Verarbeitung ---
         System.out.println("\nStarting placement optimization...");
-        PlacementService placementService = new PlacementService(inputData.rollWidth(), false);
+        PlacementService placementService = new PlacementService(inputData.rollWidth(), inputData.optimizationDepth(),false);
 
         // Implement Timer for performance
         ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
@@ -54,7 +54,7 @@ public class Main {
         long startTime = System.nanoTime();
         long startCpuTime = threadMXBean.getCurrentThreadCpuTime();
 
-        PlacementResult result = placementService.findOptimalPlacement(inputData.orders(), inputData.optimizationDepth());
+        PlacementResult result = placementService.findOptimalPlacementParallelBatches(inputData.orders());
 
         long endTime = System.nanoTime();
         long endCpuTime = threadMXBean.getCurrentThreadCpuTime();

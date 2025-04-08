@@ -1,4 +1,4 @@
-package verarbeitung;
+package verarbeitung; // Adjust package name if necessary
 
 import model.CustomerOrder;
 import model.PlacementResult;
@@ -12,35 +12,71 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
+/**
+ * Placement Service that processes batches of orders in parallel and then
+ * stacks the results.
+ * WARNING: This approach prioritizes parallel computation speed over placement
+ * quality. Stacking batches based only on their maximum height can lead to
+ * significant empty space and suboptimal results compared to sequential batch processing.
+ */
 public class PlacementService implements AutoCloseable {
 
     private final int rollWidth;
-    private final AtomicReference<PlacementResult> bestBatchResultRef = new AtomicReference<>(null);
-    private final AtomicLong recursiveCallCounter = new AtomicLong(0);
     private final ExecutorService executor;
     private final boolean manageExecutorLifecycle;
-    private final boolean useAreaSortHeuristic; // Flag for sorting heuristic
+    private final boolean useAreaSortHeuristic;
+    private final int optimizationDepth; // Batch size
 
-    private static final long PRINT_PROGRESS_INTERVAL = 50_000_000;
+    private static final long PRINT_PROGRESS_INTERVAL = 50_000_000; // For internal batch logging
 
-    // Constructor to explicitly control heuristic
-    public PlacementService(final int rollWidth, boolean useAreaSortHeuristic) {
-        this(rollWidth, Executors.newWorkStealingPool(), true, useAreaSortHeuristic);
+    /**
+     * Constructor using default WorkStealingPool and enabling area sort heuristic.
+     *
+     * @param rollWidth         The width of the roll.
+     * @param optimizationDepth The number of orders per batch.
+     */
+    public PlacementService(int rollWidth, int optimizationDepth) {
+        this(rollWidth, optimizationDepth, true, Executors.newWorkStealingPool(), true);
     }
 
-    // Full constructor allowing external executor and heuristic control
-    public PlacementService(final int rollWidth, ExecutorService executorService, boolean manageLifecycle, boolean useAreaSortHeuristic) {
+    /**
+     * Constructor allowing control over the area sort heuristic. Uses default WorkStealingPool.
+     *
+     * @param rollWidth            The width of the roll.
+     * @param optimizationDepth    The number of orders per batch.
+     * @param useAreaSortHeuristic Whether to sort orders by area within each batch before placement.
+     */
+    public PlacementService(int rollWidth, int optimizationDepth, boolean useAreaSortHeuristic) {
+        this(rollWidth, optimizationDepth, useAreaSortHeuristic, Executors.newWorkStealingPool(), true);
+    }
+
+    /**
+     * Full constructor allowing explicit ExecutorService and control over heuristic.
+     *
+     * @param rollWidth            The width of the roll.
+     * @param optimizationDepth    The number of orders per batch.
+     * @param useAreaSortHeuristic Whether to sort orders by area within each batch.
+     * @param executorService      The executor service to use for parallel tasks.
+     * @param manageLifecycle      True if this service should shut down the executor, false otherwise.
+     */
+    public PlacementService(int rollWidth, int optimizationDepth, boolean useAreaSortHeuristic, ExecutorService executorService, boolean manageLifecycle) {
         if (rollWidth <= 0) {
             throw new IllegalArgumentException("Roll width must be positive.");
+        }
+        if (optimizationDepth <= 0) {
+            throw new IllegalArgumentException("Optimization depth (batch size) must be positive.");
         }
         if (executorService == null) {
             throw new IllegalArgumentException("ExecutorService cannot be null.");
         }
         this.rollWidth = rollWidth;
+        this.optimizationDepth = optimizationDepth;
+        this.useAreaSortHeuristic = useAreaSortHeuristic;
         this.executor = executorService;
         this.manageExecutorLifecycle = manageLifecycle;
-        this.useAreaSortHeuristic = useAreaSortHeuristic; // Store the flag
+        // Ensure CustomerOrder has required methods
         try {
             CustomerOrder.class.getMethod("copy");
             CustomerOrder.class.getMethod("updateDerivedPlacementFields");
@@ -49,12 +85,10 @@ public class PlacementService implements AutoCloseable {
         }
     }
 
-
     @Override
     public void close() {
-        // ... (shutdown logic remains the same)
         if (manageExecutorLifecycle) {
-            System.out.println("Shutting down PlacementService ExecutorService...");
+            System.out.println("Shutting down ParallelBatchPlacementService ExecutorService...");
             executor.shutdown();
             try {
                 if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
@@ -69,94 +103,98 @@ public class PlacementService implements AutoCloseable {
             }
             System.out.println("ExecutorService shut down.");
         } else {
-            System.out.println("PlacementService closed (external executor not shut down).");
+            System.out.println("ParallelBatchPlacementService closed (external executor not shut down).");
         }
     }
 
-    public PlacementResult findOptimalPlacement(final List<CustomerOrder> allOrders, final int optimizationDepth) {
-        this.recursiveCallCounter.set(0);
-        allOrders.forEach(CustomerOrder::unsetPlacement);
+    /**
+     * Finds a placement by optimizing batches in parallel and stacking results.
+     * Note: This yields potentially faster computation but likely suboptimal placement quality.
+     *
+     * @param allOrders The list of all customer orders to place.
+     * @return A PlacementResult representing the combined placement.
+     */
+    public PlacementResult findOptimalPlacementParallelBatches(final List<CustomerOrder> allOrders) {
+        allOrders.forEach(CustomerOrder::unsetPlacement); // Reset state
 
-        List<CustomerOrder> remainingOrders = new ArrayList<>(allOrders);
+        // 1. Split into batches (using copies)
+        final List<List<CustomerOrder>> batches = IntStream.range(0, (allOrders.size() + optimizationDepth - 1) / optimizationDepth)
+                .mapToObj(i -> {
+                    int start = i * optimizationDepth;
+                    int end = Math.min(start + optimizationDepth, allOrders.size());
+                    // Create copies for each batch to ensure independence
+                    return allOrders.subList(start, end).stream()
+                            .map(CustomerOrder::copy)
+                            .collect(Collectors.toList());
+                })
+                .toList();
+
+        if (batches.isEmpty()) {
+            System.out.println("No orders to place.");
+            return new PlacementResult(Collections.emptyList(), Set.of(new Point(0,0)), 0, 0.0);
+        }
+
+        System.out.printf("Processing %d batches in parallel (Batch Size: %d, Heuristic Sort: %b)...%n",
+                batches.size(), optimizationDepth, useAreaSortHeuristic);
+
+        // 2. Launch parallel calculation for each batch
+        List<CompletableFuture<PlacementResult>> futures = batches.stream()
+                .map(batch -> CompletableFuture.supplyAsync(() ->
+                                optimizeSingleBatch(batch), // optimizeSingleBatch operates on copies
+                        executor))
+                .toList();
+
+        // 3. Wait for all batch optimizations to complete
+        System.out.println("Waiting for parallel batch computations to finish...");
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        System.out.println("All batch computations finished.");
+
+        // 4. Combine results by stacking
         final List<CustomerOrder> globallyPlacedOrders = new ArrayList<>();
-        int globalYOffset = 0;
+        int currentGlobalYOffset = 0;
 
-
-        while (!remainingOrders.isEmpty()) {
-            final int ordersToOptimize = Math.min(remainingOrders.size(), optimizationDepth);
-            final List<CustomerOrder> batchToOptimizeInput = remainingOrders.subList(0, ordersToOptimize);
-            final List<CustomerOrder> nextRemainingOrders = new ArrayList<>(remainingOrders.subList(ordersToOptimize, remainingOrders.size()));
-
-            List<CustomerOrder> batchToOptimize = batchToOptimizeInput
-                    .stream()
-                    .map(CustomerOrder::copy)
-                    .collect(Collectors.toList());
-
-            // --- OPTIONAL OPTIMIZATION 1: Sort batch by area descending ---
-            String sortInfo = "";
-            if (this.useAreaSortHeuristic) {
-                batchToOptimize.sort(Comparator.comparingDouble((CustomerOrder o) ->
-                        (double)o.originalWidth * o.originalHeight).reversed());
-                sortInfo = " (sorted by area desc)";
-            }
-            // --- End Optional Optimization 1 ---
-
-            final Set<Point> batchStartDockingPoints = Set.of(new Point(0, 0));
-
-            System.out.printf("Optimizing batch of %d orders%s starting at global Y=%d.%n",
-                    batchToOptimize.size(), sortInfo, globalYOffset); // Include sort info in log
-
-            final long batchStartCounterValue = this.recursiveCallCounter.get();
-            bestBatchResultRef.set(null);
-
-            recursivePlace(batchToOptimize, Collections.emptyList(), batchStartDockingPoints);
-
-            final long batchCalls = this.recursiveCallCounter.get() - batchStartCounterValue;
-            System.out.printf("Batch recursion calls: %,d%n", batchCalls);
-
-            PlacementResult currentBestBatch = bestBatchResultRef.get();
-
-            if (currentBestBatch == null) {
-                System.err.printf("Warning: No valid placement found for batch%s starting at Y=%d. Adding originals back and stopping.%n", sortInfo, globalYOffset);
-                remainingOrders = new ArrayList<>(batchToOptimizeInput);
-                remainingOrders.addAll(nextRemainingOrders);
-                break; // Stop optimization
+        System.out.println("Combining parallel batch results by stacking...");
+        int batchIndex = 0;
+        for (CompletableFuture<PlacementResult> future : futures) {
+            batchIndex++;
+            PlacementResult batchResult;
+            try {
+                batchResult = future.join(); // Get completed result (already finished)
+            } catch (Exception e) {
+                System.err.printf("Error getting result for batch %d: %s%n", batchIndex, e.getMessage());
+                // Optionally log stack trace: e.printStackTrace();
+                continue; // Skip this batch if fetching result failed
             }
 
-            System.out.printf("Batch finished. Best relative height: %d. Orders placed: %d%n",
-                    currentBestBatch.totalHeight(), currentBestBatch.placedOrders().size());
 
-            // --- Add results to global list (remains the same) ---
-            Set<Integer> placedInBatchIds = new HashSet<>();
-            for (final CustomerOrder batchPlacedOrder : currentBestBatch.placedOrders()) {
-                CustomerOrder globalOrder = batchPlacedOrder.copy();
-                globalOrder.placedY += globalYOffset;
-                globalOrder.updateDerivedPlacementFields();
+            if (batchResult == null || batchResult.placedOrders().isEmpty()) {
+                System.out.printf("  - Batch %d: No orders placed or result was null.%n", batchIndex);
+                continue; // Skip empty or failed batches
+            }
+
+            int batchRelativeHeight = batchResult.totalHeight();
+            System.out.printf("  - Batch %d: Adding %d orders (Rel Height: %d) starting at Global Y: %d%n",
+                    batchIndex, batchResult.placedOrders().size(), batchRelativeHeight, currentGlobalYOffset);
+
+            for (CustomerOrder batchPlacedOrder : batchResult.placedOrders()) {
+                CustomerOrder globalOrder = batchPlacedOrder.copy(); // Create final copy
+                globalOrder.placedY += currentGlobalYOffset;     // Apply offset
+                globalOrder.updateDerivedPlacementFields();      // Update calculated coords
                 globallyPlacedOrders.add(globalOrder);
-                placedInBatchIds.add(globalOrder.getId());
             }
 
-            // --- Update global Y offset (remains the same) ---
-            globalYOffset = globallyPlacedOrders.stream()
+            // Update the offset for the *next* batch using the actual max Y achieved
+            currentGlobalYOffset = globallyPlacedOrders.stream()
                     .mapToInt(CustomerOrder::getYRO)
                     .max()
-                    .orElse(globalYOffset);
+                    .orElse(currentGlobalYOffset); // Keep offset if list somehow became empty
+        }
+        System.out.println("Batch combination finished.");
 
-            // --- Prepare remaining orders (remains the same) ---
-            List<CustomerOrder> ordersNotPlacedInBatch = batchToOptimizeInput.stream()
-                    .filter(o -> !placedInBatchIds.contains(o.getId()))
-                    .toList();
-
-            remainingOrders = new ArrayList<>(ordersNotPlacedInBatch);
-            remainingOrders.addAll(nextRemainingOrders);
-
-        } // End while loop
-
-        System.out.printf("Total recursive calls: %,d%n", this.recursiveCallCounter.get());
-
-        // --- Final Calculation & Cleanup --- (remains the same)
+        // 5. Final Calculations
         final int finalMaxY = globallyPlacedOrders.stream().mapToInt(CustomerOrder::getYRO).max().orElse(0);
         final double totalOrderArea = globallyPlacedOrders.stream()
+                .filter(CustomerOrder::isPlaced) // Ensure only placed orders contribute
                 .mapToDouble(o -> (double) o.currentWidth * o.currentHeight)
                 .sum();
         final double totalRollAreaUsed = (double) this.rollWidth * finalMaxY;
@@ -164,11 +202,13 @@ public class PlacementService implements AutoCloseable {
 
         final Set<Point> finalAbsoluteDockingPoints = calculateDockingPoints(globallyPlacedOrders, this.rollWidth);
 
+        // 6. Cleanup original input orders state
         final Set<Integer> finalPlacedOrderIds = globallyPlacedOrders.stream().map(CustomerOrder::getId).collect(Collectors.toSet());
         for (final CustomerOrder initialOrder : allOrders) {
-            if (!finalPlacedOrderIds.contains(initialOrder.id)) {
+            if (!finalPlacedOrderIds.contains(initialOrder.getId())) {
                 initialOrder.unsetPlacement();
             } else {
+                // Optional: Update original object state to reflect final placement
                 globallyPlacedOrders.stream()
                         .filter(p -> p.getId() == initialOrder.getId())
                         .findFirst()
@@ -176,37 +216,84 @@ public class PlacementService implements AutoCloseable {
             }
         }
 
-        return new PlacementResult(List.copyOf(globallyPlacedOrders),
-                finalAbsoluteDockingPoints, finalMaxY, utilization);
+        System.out.printf("Parallel batch placement finished. Total Height: %d, Utilization: %.2f%%%n", finalMaxY, utilization);
+        return new PlacementResult(List.copyOf(globallyPlacedOrders), finalAbsoluteDockingPoints, finalMaxY, utilization);
     }
 
-    // --- recursivePlace Method ---
-    // The internal logic of recursivePlace, including the stronger docking point
-    // pruning (Opt 2b using minRemainingHeight), remains UNCHANGED from the
-    // previous version. We assume that pruning optimization is safe.
-    private void recursivePlace(final List<CustomerOrder> ordersToPlace,
-                                final List<CustomerOrder> currentlyPlaced,
-                                final Set<Point> availableDockingPoints
-    ) {
-        long currentCallCount = this.recursiveCallCounter.incrementAndGet();
-        PlacementResult currentBest = bestBatchResultRef.get();
+    // --- Helper to optimize a single, independent batch ---
+    private PlacementResult optimizeSingleBatch(List<CustomerOrder> batchOrders) {
+        // Isolated state for this batch optimization task
+        AtomicReference<PlacementResult> batchBestResult = new AtomicReference<>(null);
+        AtomicLong batchCallCounter = new AtomicLong(0);
+        String batchInfo = String.format("Batch (Size %d, Hash %d)", batchOrders.size(), batchOrders.hashCode()); // Basic identifier
 
+        System.out.printf("Starting optimization for %s%n", batchInfo);
+
+        if (batchOrders.isEmpty()) {
+            return null; // Nothing to place
+        }
+
+        // --- Optional: Sort batch by area descending ---
+        if (this.useAreaSortHeuristic) {
+            batchOrders.sort(Comparator.comparingDouble((CustomerOrder o) ->
+                    (double) o.originalWidth * o.originalHeight).reversed());
+            // System.out.printf("  %s: Sorted by area.%n", batchInfo);
+        }
+
+        final Set<Point> batchStartDockingPoints = Set.of(new Point(0, 0));
+
+        // --- Call the recursive function with batch-local state ---
+        recursivePlaceForSingleBatch(
+                batchOrders,               // The list of orders (copies) for this batch
+                Collections.emptyList(),   // Start with no orders placed
+                batchStartDockingPoints,   // Start docking at origin (relative)
+                batchBestResult,           // Holder for *this batch's* best result
+                batchCallCounter           // Counter for *this batch's* calls
+        );
+
+        long calls = batchCallCounter.get();
+        PlacementResult finalResult = batchBestResult.get();
+        System.out.printf("Finished optimization for %s. Calls: %,d. Best Rel Height: %d%n",
+                          batchInfo, calls, finalResult != null ? finalResult.totalHeight() : -1);
+
+        return finalResult; // Return the best result found for this batch
+    }
+
+
+    // --- Recursive placement function adapted for isolated batch state ---
+    private void recursivePlaceForSingleBatch(
+            final List<CustomerOrder> ordersToPlace,   // Immutable List<OrderCopy>
+            final List<CustomerOrder> currentlyPlaced, // Immutable List<OrderCopy>
+            final Set<Point> availableDockingPoints,   // Immutable Set<Point>
+            // --- Batch-local state holders ---
+            final AtomicReference<PlacementResult> localBestBatchResultRef,
+            final AtomicLong localRecursiveCallCounter
+    ) {
+        // --- Increment local counter ---
+        long currentCallCount = localRecursiveCallCounter.incrementAndGet();
+        // --- Read local best result ---
+        PlacementResult currentBest = localBestBatchResultRef.get();
+
+        // Optional Progress Printing (uses local counter)
         if (currentCallCount > 0 && currentCallCount % PRINT_PROGRESS_INTERVAL == 0) {
-            System.out.printf("...recursive calls: %,d (Current best height: %d)%n",
+            // Potentially add a batch identifier here if needed for detailed logging
+            System.out.printf("...[%d] recursive calls: %,d (Current best height: %d)%n",
+                    Thread.currentThread().threadId(), // Simple thread ID as indicator
                     currentCallCount, currentBest != null ? currentBest.totalHeight() : -1);
         }
 
-        // --- Base Case --- (No change)
+        // --- Base Case ---
         if (ordersToPlace.isEmpty()) {
-            // ... (same as before) ...
             final int currentRelativeMaxY = currentlyPlaced.stream().mapToInt(CustomerOrder::getYRO).max().orElse(0);
+            // Create result with copies (essential!)
             PlacementResult potentialResult = new PlacementResult(
                     currentlyPlaced.stream().map(CustomerOrder::copy).toList(),
                     Set.copyOf(availableDockingPoints),
                     currentRelativeMaxY,
-                    0.0
+                    0.0 // Utilization not relevant here
             );
-            bestBatchResultRef.accumulateAndGet(potentialResult,
+            // --- Update local best result atomically ---
+            localBestBatchResultRef.accumulateAndGet(potentialResult,
                     (existingBest, potentialNew) ->
                             (existingBest == null || potentialNew.totalHeight() < existingBest.totalHeight())
                                     ? potentialNew : existingBest
@@ -214,24 +301,23 @@ public class PlacementService implements AutoCloseable {
             return;
         }
 
-        // --- Pruning 1: Intermediate Height --- (No change)
+        // --- Pruning 1: Intermediate Height ---
+        // --- Read local best result ---
+        currentBest = localBestBatchResultRef.get();
         if (currentBest != null && !currentlyPlaced.isEmpty()) {
-            // ... (same as before) ...
             final int intermediateMaxY = currentlyPlaced.stream().mapToInt(CustomerOrder::getYRO).max().getAsInt();
             if (intermediateMaxY >= currentBest.totalHeight()) {
-                return;
+                return; // Prune this branch
             }
         }
 
-
         // --- Recursive Step ---
-
         if (currentlyPlaced.isEmpty()) {
-            // --- INITIAL PLACEMENT (Parallel) --- (No change)
-            // ... (same logic for parallel initial placement as before) ...
+            // --- INITIAL PLACEMENT (Parallel within this batch task) ---
             final Point initialDockPoint = new Point(0, 0);
             if (!availableDockingPoints.contains(initialDockPoint)) {
-                System.err.println("Error: Initial dock point (0,0) missing."); return;
+                System.err.printf("[%d] Error: Initial dock point (0,0) missing!%n", Thread.currentThread().threadId());
+                return;
             }
 
             List<CompletableFuture<Void>> futures = new ArrayList<>();
@@ -249,7 +335,8 @@ public class PlacementService implements AutoCloseable {
 
                     if (initialDockPoint.x() + width > this.rollWidth) continue;
 
-                    PlacementResult currentBestForPruning = bestBatchResultRef.get();
+                    // --- Read local best result for pruning check ---
+                    PlacementResult currentBestForPruning = localBestBatchResultRef.get();
                     if (currentBestForPruning != null && initialDockPoint.y() + height >= currentBestForPruning.totalHeight()) {
                         continue;
                     }
@@ -266,21 +353,21 @@ public class PlacementService implements AutoCloseable {
                     if (newBottomRight.x() <= this.rollWidth && !isPointCovered(newBottomRight, nextPlaced)) nextDockingPoints.add(newBottomRight);
                     final Set<Point> immutableNextDocking = Set.copyOf(nextDockingPoints);
 
-                    CompletableFuture<Void> future = CompletableFuture.runAsync(() ->
-                        recursivePlace(immutableRemaining, nextPlaced, immutableNextDocking), executor);
+                    // --- Launch async task calling THIS function, passing LOCAL state ---
+                    CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                        recursivePlaceForSingleBatch(immutableRemaining, nextPlaced, immutableNextDocking,
+                                localBestBatchResultRef, localRecursiveCallCounter); // Pass local refs!
+                    }, executor); // Use the shared executor
                     futures.add(future);
 
                     if (orderToConsider.originalWidth == orderToConsider.originalHeight) break;
                 }
             }
+            // Wait for parallel first-placement branches *within this batch* to complete
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
 
         } else {
             // --- SUBSEQUENT PLACEMENTS (Sequential within this branch) ---
-            // Includes stronger pruning (Opt 2b), but no sorting here (list order is fixed)
-            // ... (logic remains exactly the same as previous version, including minRemainingHeight calc and pruning) ...
-
             final CustomerOrder orderToTry = ordersToPlace.getFirst();
             final List<CustomerOrder> remainingForNextCall = ordersToPlace.subList(1, ordersToPlace.size());
 
@@ -289,37 +376,40 @@ public class PlacementService implements AutoCloseable {
                     .min()
                     .orElse(Integer.MAX_VALUE);
 
-
             final List<Point> sortedDockingPoints = availableDockingPoints.stream()
                     .sorted(Comparator.comparingInt(Point::y).thenComparingInt(Point::x))
                     .toList();
 
             for (final Point dockPoint : sortedDockingPoints) {
-                PlacementResult currentBestForPruning = bestBatchResultRef.get();
+                // --- Read local best result ---
+                PlacementResult currentBestForPruning = localBestBatchResultRef.get();
 
+                // --- Pruning 2 ---
                 if (currentBestForPruning != null && dockPoint.y() >= currentBestForPruning.totalHeight()) {
                     break;
                 }
 
+                // --- Stronger Pruning (Opt 2b) using local best result ---
                 if (currentBestForPruning != null && minRemainingHeight != Integer.MAX_VALUE &&
                         dockPoint.y() + minRemainingHeight >= currentBestForPruning.totalHeight()) {
-                    break; // Stronger prune Opt 2b
+                    break;
                 }
-
 
                 for (final boolean rotate : new boolean[]{false, true}) {
                     final int width = rotate ? orderToTry.originalHeight : orderToTry.originalWidth;
                     final int height = rotate ? orderToTry.originalWidth : orderToTry.originalHeight;
 
+                    // --- Pruning 3 (using local best result) ---
                     final int currentItemMinDim = Math.min(width, height);
-                    currentBestForPruning = bestBatchResultRef.get();
+                    currentBestForPruning = localBestBatchResultRef.get(); // Re-read
                     if (currentBestForPruning != null && dockPoint.y() + currentItemMinDim >= currentBestForPruning.totalHeight()) {
                         continue;
                     }
 
                     if (dockPoint.x() + width > this.rollWidth) continue;
 
-                    currentBestForPruning = bestBatchResultRef.get();
+                    // --- Height Pruning (using local best result) ---
+                    currentBestForPruning = localBestBatchResultRef.get(); // Re-read
                     if (currentBestForPruning != null && dockPoint.y() + height >= currentBestForPruning.totalHeight()) {
                         continue;
                     }
@@ -355,22 +445,26 @@ public class PlacementService implements AutoCloseable {
                         }
                         Set<Point> immutableNextDocking = Set.copyOf(nextDockingPoints);
 
-                        recursivePlace(remainingForNextCall, immutableNextPlaced, immutableNextDocking);
+                        // --- Recursive call passing LOCAL state holders down ---
+                        recursivePlaceForSingleBatch(remainingForNextCall, immutableNextPlaced, immutableNextDocking,
+                                localBestBatchResultRef, localRecursiveCallCounter); // Pass local refs!
                     }
 
                     if (orderToTry.originalWidth == orderToTry.originalHeight) break;
-                }
-            }
-        }
-    }
+                } // End rotation loop
+            } // End docking point loop
+        } // End else (subsequent placements)
+    } // End recursivePlaceForSingleBatch
 
 
-    // --- Static Helpers (isPointCovered, calculateDockingPoints) remain the same ---
+    // --- Static helper methods (unchanged) ---
+
     /** Static helper, checks coverage against a list of placed orders */
     private static boolean isPointCovered(final Point p, final List<CustomerOrder> orders) {
-        // ... (no change) ...
         for (final CustomerOrder order : orders) {
-            if (p.x() >= order.getXLU() && p.x() < order.getXRO() &&
+            // Check assumes order IS placed and uses its current coordinates
+            if (order.isPlaced && // Explicitly check if placed, just to be safe
+                    p.x() >= order.getXLU() && p.x() < order.getXRO() &&
                     p.y() >= order.getYLU() && p.y() < order.getYRO()) {
                 return true;
             }
@@ -380,45 +474,58 @@ public class PlacementService implements AutoCloseable {
 
     /** Static helper, calculates valid docking points */
     private static Set<Point> calculateDockingPoints(final List<CustomerOrder> placedOrders, final int rollWidth) {
-        // ... (no change) ...
         if (placedOrders.isEmpty()) {
             return Set.of(new Point(0, 0));
         }
 
         final Set<Point> potentialPoints = new HashSet<>();
-        potentialPoints.add(new Point(0,0));
+        potentialPoints.add(new Point(0,0)); // Always consider the origin initially
 
+        // Add corners of placed items as potential docking points
         for (final CustomerOrder order : placedOrders) {
-            if (order.isPlaced) {
-                potentialPoints.add(new Point(order.getXLU(), order.getYRO()));
-                potentialPoints.add(new Point(order.getXRO(), order.getYLU()));
+            if (order.isPlaced) { // Ensure it's actually placed
+                potentialPoints.add(new Point(order.getXLU(), order.getYRO())); // Top-left corner's Y becomes next potential bottom-left Y
+                potentialPoints.add(new Point(order.getXRO(), order.getYLU())); // Bottom-right corner's X becomes next potential bottom-left X
             }
         }
 
+        // Filter points: remove invalid (out of bounds) or covered points
         final Set<Point> validPoints = new HashSet<>();
         for (final Point p : potentialPoints) {
-            if (p.x() < 0 || p.x() >= rollWidth || p.y() < 0) continue;
+            // Check bounds (X must be strictly less than rollWidth for placement start)
+            if (p.x() < 0 || p.x() >= rollWidth || p.y() < 0) {
+                continue;
+            }
 
+            // Check if the point itself is covered by the INTERIOR of any placed order
             if (!isPointCovered(p, placedOrders)) {
                 validPoints.add(p);
             }
         }
 
+        // Fallback logic if all generated points are covered
         if (validPoints.isEmpty() && !placedOrders.isEmpty()) {
             Point origin = new Point(0,0);
-            if (origin.x() < rollWidth && !isPointCovered(origin, placedOrders)) {
+            // Check origin validity (bounds and coverage)
+            if (origin.x() < rollWidth && origin.y() >= 0 && !isPointCovered(origin, placedOrders)) {
                 validPoints.add(origin);
             } else {
+                // Try adding the point (0, highestY) as a potential start for the next "row"
                 int maxY = placedOrders.stream().filter(o -> o.isPlaced).mapToInt(CustomerOrder::getYRO).max().orElse(0);
                 Point topStart = new Point(0, maxY);
+                // Check bounds and coverage for this potential point too
                 if (topStart.x() < rollWidth && topStart.y() >= 0 && !isPointCovered(topStart, placedOrders)) {
                     validPoints.add(topStart);
                 }
+                // If still empty, it means no valid starting point could be found based on corners.
             }
-        } else if (validPoints.isEmpty()){
+        }
+        // Ensure origin is present if nothing is placed yet (should be added by initial Set.of, but belt-and-suspenders)
+        else if (placedOrders.isEmpty() && validPoints.isEmpty()){
             validPoints.add(new Point(0,0));
         }
 
-        return Set.copyOf(validPoints);
+        return Set.copyOf(validPoints); // Return immutable set
     }
-}
+
+} // End of class ParallelBatchPlacementService
