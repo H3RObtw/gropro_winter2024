@@ -1,8 +1,8 @@
 reset
-set term png size 900,1523
+set term png size 900,1394
 set output 'IHK3.png'
 set xrange [0:900]
-set yrange [0:1423]
+set yrange [0:1294]
 set size ratio -1
 
 set title "\

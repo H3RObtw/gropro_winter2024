@@ -17,8 +17,6 @@ public class PlacementService {
         this.rollWidth = rollWidth;
     }
 
-// findOptimalPlacement remains the same as the previous version
-
     public PlacementResult findOptimalPlacement(List<CustomerOrder> allOrders, int optimizationDepth) {
         List<CustomerOrder> remainingOrders = new ArrayList<>(allOrders);
         List<CustomerOrder> globallyPlacedOrders = new ArrayList<>();
@@ -51,8 +49,6 @@ public class PlacementService {
             System.out.printf("Batch finished. Best relative height: %d. Orders placed: %d%n",
                     bestBatchResult.totalHeight(), bestBatchResult.placedOrders().size());
 
-            int batchRelativeMaxY = bestBatchResult.totalHeight();
-
             // Add successfully placed orders to the global list, adjusting Y-coordinates
             for (CustomerOrder batchPlacedOrder : bestBatchResult.placedOrders()) {
                 batchPlacedOrder.placedY += globalYOffset; // Adjust Y by the offset
@@ -84,7 +80,7 @@ public class PlacementService {
         Set<Point> finalAbsoluteDockingPoints = calculateDockingPoints(globallyPlacedOrders, rollWidth);
 
         // Cleanup unplaced orders
-        Set<Integer> placedOrderIds = globallyPlacedOrders.stream().map(o -> o.id).collect(Collectors.toSet());
+        Set<Integer> placedOrderIds = globallyPlacedOrders.stream().map(CustomerOrder::getId).collect(Collectors.toSet());
         for(CustomerOrder initialOrder : allOrders) {
             if(!placedOrderIds.contains(initialOrder.id)) {
                 initialOrder.unsetPlacement();
@@ -121,12 +117,12 @@ public class PlacementService {
                             return copy;
                         })
                         .toList();
-                bestBatchResult = new PlacementResult(placedCopy, new HashSet<>(availableDockingPoints), currentRelativeMaxY, 0);
+                bestBatchResult = new PlacementResult(placedCopy, Set.copyOf(availableDockingPoints), currentRelativeMaxY, 0);
             }
             return;
         }
 
-        // --- Pruning (optional) ---
+        // --- Pruning 1: Current height already exceeds best ---
         int intermediateMaxY = currentlyPlaced.stream().mapToInt(CustomerOrder::getYRO).max().orElse(0);
         if (bestBatchResult != null && intermediateMaxY >= bestBatchResult.totalHeight()) {
             return; // Prune
@@ -146,19 +142,14 @@ public class PlacementService {
 
             for (int i = 0; i < ordersToPlace.size(); i++) {
                 CustomerOrder orderToTry = ordersToPlace.get(i);
-
-                // Create list of remaining orders for the recursive call *if* this one is placed
                 List<CustomerOrder> remainingForNextCall = new ArrayList<>(ordersToPlace.size() - 1);
-                for (int j = 0; j < ordersToPlace.size(); j++) {
-                    if (i != j) {
-                        remainingForNextCall.add(ordersToPlace.get(j));
-                    }
-                }
+                // OPTIMIZATION: Slightly more efficient way to build remaining list
+                if (i > 0) remainingForNextCall.addAll(ordersToPlace.subList(0, i));
+                if (i < ordersToPlace.size() - 1) remainingForNextCall.addAll(ordersToPlace.subList(i + 1, ordersToPlace.size()));
 
                 // Try both orientations at (0,0)
                 for (boolean rotate : new boolean[]{false, true}) {
                     int width = rotate ? orderToTry.originalHeight : orderToTry.originalWidth;
-                    int height = rotate ? orderToTry.originalWidth : orderToTry.originalHeight;
 
                     // Check only width bounds (overlap not possible yet)
                     if (initialDockPoint.x() + width > rollWidth) {
@@ -169,14 +160,16 @@ public class PlacementService {
                     orderToTry.setPlacement(initialDockPoint.x(), initialDockPoint.y(), rotate);
 
                     // --- Valid Initial Placement ---
-                    List<CustomerOrder> nextPlaced = Collections.singletonList(orderToTry); // List with just this order
+                    List<CustomerOrder> nextPlaced = List.of(orderToTry); // Immutable list for first placement
 
                     // Calculate next docking points (TL and BR corners)
                     Set<Point> nextDockingPoints = new HashSet<>();
                     Point newTopLeft = new Point(orderToTry.getXLU(), orderToTry.getYRO());
                     Point newBottomRight = new Point(orderToTry.getXRO(), orderToTry.getYLU());
-                    if (newTopLeft.x() <= rollWidth) nextDockingPoints.add(newTopLeft);
-                    if (newBottomRight.x() <= rollWidth) nextDockingPoints.add(newBottomRight);
+
+                    // OPTIMIZATION: Only add points if not covered (though calcDockPoints handles this later too)
+                    if (newTopLeft.x() <= rollWidth /* && !isPointCovered(newTopLeft, nextPlaced) */ ) nextDockingPoints.add(newTopLeft);
+                    if (newBottomRight.x() <= rollWidth /* && !isPointCovered(newBottomRight, nextPlaced) */) nextDockingPoints.add(newBottomRight);
 
                     // --- Make the recursive call ---
                     recursivePlace(remainingForNextCall, nextPlaced, nextDockingPoints);
@@ -200,13 +193,28 @@ public class PlacementService {
                     .toList();
 
             for (Point dockPoint : sortedDockingPoints) {
+
+                // --- Pruning 2: Docking point Y already too high ---
+                if (bestBatchResult != null && dockPoint.y() >= bestBatchResult.totalHeight()) {
+                    // Since points are sorted by Y, no further points in this list can yield a better solution
+                    break; // Can break instead of continue because list is sorted by Y
+                }
+
                 for (boolean rotate : new boolean[]{false, true}) {
                     int width = rotate ? orderToTry.originalHeight : orderToTry.originalWidth;
                     int height = rotate ? orderToTry.originalWidth : orderToTry.originalHeight;
 
-                    if (dockPoint.x() + width > rollWidth) continue; // Check width bounds
+                    // --- Pruning 3: Docking point + minimum height too high ---
+                    // (More aggressive, requires minDimension method)
+                    int minDim = Math.min(orderToTry.originalWidth, orderToTry.originalHeight);
+                    if (bestBatchResult != null && dockPoint.y() + minDim >= bestBatchResult.totalHeight()) {
+                       continue; // Skip this orientation if it *must* exceed best height
+                    }
 
-                    orderToTry.setPlacement(dockPoint.x(), dockPoint.y(), rotate); // Tentative placement
+
+                    if (dockPoint.x() + width > rollWidth) continue;
+
+                    orderToTry.setPlacement(dockPoint.x(), dockPoint.y(), rotate);
 
                     // Check overlap
                     boolean overlaps = false;
@@ -219,7 +227,8 @@ public class PlacementService {
 
                     if (!overlaps) {
                         // Valid Placement Found
-                        List<CustomerOrder> nextPlaced = new ArrayList<>(currentlyPlaced);
+                        List<CustomerOrder> nextPlaced = new ArrayList<>(currentlyPlaced.size() + 1);
+                        nextPlaced.addAll(currentlyPlaced);
                         nextPlaced.add(orderToTry);
 
                         Set<Point> nextDockingPoints = new HashSet<>(availableDockingPoints);
@@ -227,36 +236,48 @@ public class PlacementService {
 
                         Point newTopLeft = new Point(orderToTry.getXLU(), orderToTry.getYRO());
                         Point newBottomRight = new Point(orderToTry.getXRO(), orderToTry.getYLU());
-                        if (newTopLeft.x() <= rollWidth) nextDockingPoints.add(newTopLeft);
-                        if (newBottomRight.x() <= rollWidth) nextDockingPoints.add(newBottomRight);
 
-                        // Optional filtering:
-                        // Set<Point> filteredNextDockingPoints = nextDockingPoints.stream() ... filter ...
+                        // OPTIMIZATION: Check coverage before adding new points
+                        // Need a quick way to check against currentlyPlaced + orderToTry
+                        List<CustomerOrder> potentialBlockers = nextPlaced; // Already includes orderToTry
+
+                        if (newTopLeft.x() <= rollWidth && !isPointCovered(newTopLeft, potentialBlockers)) {
+                            nextDockingPoints.add(newTopLeft);
+                        }
+                        if (newBottomRight.x() <= rollWidth && !isPointCovered(newBottomRight, potentialBlockers)) {
+                            nextDockingPoints.add(newBottomRight);
+                        }
 
                         // Make the recursive call
-                        recursivePlace(remainingForNextCall, nextPlaced, nextDockingPoints); // or filteredNextDockingPoints
+                        recursivePlace(remainingForNextCall, nextPlaced, nextDockingPoints); // Pass mutable or immutable copies
                     }
                     orderToTry.unsetPlacement(); // Backtrack
 
-                    if (orderToTry.originalWidth == orderToTry.originalHeight) break; // Opt: Skip rotation if square
-                } // End rotation loop
-            } // End docking point loop
-        } // End else (subsequent placements)
+                    if (orderToTry.originalWidth == orderToTry.originalHeight) break;
+                }
+            }
+        }
 
-        // --- Optional: Exploration without placing the current order ---
-        // Needs careful integration with the initial placement logic if used.
-        // If currentlyPlaced.isEmpty(), this skip logic needs to apply *after* trying all initial orders.
-        // If not currentlyPlaced.isEmpty(), it applies after trying to place orderToTry at all points.
-     /*
-     if (!currentlyPlaced.isEmpty()) { // Apply skip only after trying subsequent placements
-         // Consider the path where orderToTry is *not* placed
-         recursivePlace(remainingForNextCall, currentlyPlaced, availableDockingPoints);
-     } else {
-         // If it's the initial placement phase, and *none* of the orders could be placed at (0,0)
-         // maybe trigger skip logic here? More complex. Let's omit for now.
-     }
-     */
     } // End recursivePlace
+
+
+    /**
+     * Helper method to check if a point is covered by the area of any order in the list.
+     * Used for filtering potential docking points during recursion.
+     * Area is defined as [xLU, xRO) x [yLU, yRO)
+     */
+    private boolean isPointCovered(Point p, List<CustomerOrder> orders) {
+        for (CustomerOrder order : orders) {
+            // Check if the order object actually has placement data
+            if (!order.isPlaced) continue;
+
+            if (p.x() >= order.getXLU() && p.x() < order.getXRO() &&
+                    p.y() >= order.getYLU() && p.y() < order.getYRO()) {
+                return true; // Point is covered
+            }
+        }
+        return false;
+    }
 
 
     /**
@@ -278,8 +299,8 @@ public class PlacementService {
 
         // 1. Generate potential points from ALL TL and BR corners
         for (CustomerOrder order : globallyPlacedOrders) {
-            potentialPoints.add(new Point(order.getXLU(), order.getYRO())); // Top-left corner
-            potentialPoints.add(new Point(order.getXRO(), order.getYLU())); // Bottom-right corner
+            potentialPoints.add(new Point(order.getXLU(), order.getYRO())); // Top-left
+            potentialPoints.add(new Point(order.getXRO(), order.getYLU())); // Bottom-right
         }
         // Also always consider (0,0) as a potential starting point if available
         potentialPoints.add(new Point(0,0));
@@ -309,7 +330,6 @@ public class PlacementService {
                 validPoints.add(p);
             }
         }
-
         return validPoints;
     }
 

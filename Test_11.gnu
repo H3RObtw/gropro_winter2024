@@ -1,8 +1,8 @@
 reset
-set term png size 900,2630
+set term png size 900,2400
 set output 'Test_11.png'
 set xrange [0:900]
-set yrange [0:2530]
+set yrange [0:2300]
 set size ratio -1
 
 set title "\

@@ -24,8 +24,8 @@ public class OutputWriter {
     private static void writeTextOutput(String filename, InputData input, PlacementResult result) throws IOException {
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename))) {
             writer.write(input.description() + "\n");
-            writer.write(String.format(Locale.US,"Benötgte Länge: %.1fcm%n", (double)result.totalHeight() / 10.0)); // mm to cm
-            writer.write(String.format(Locale.US,"Genutzte Flaeche: %.2f%%%n", result.utilization()));
+            writer.write(String.format(Locale.US, "Benötgte Länge: %.1fcm%n", (double) result.totalHeight() / 10.0)); // mm to cm
+            writer.write(String.format(Locale.US, "Genutzte Flaeche: %.2f%%%n", result.utilization()));
             writer.newLine();
             writer.write("Positionierung der Kundenaufträge:\n");
             // Sort orders by ID for consistent output
@@ -41,7 +41,7 @@ public class OutputWriter {
             }
             writer.newLine();
             writer.write("Verbleibende Andockpunkte:\n");
-             // Sort docking points for consistent output
+            // Sort docking points for consistent output
             List<Point> sortedPoints = result.finalDockingPoints().stream()
                     .sorted(Comparator.comparingInt(Point::y).thenComparingInt(Point::x))
                     .toList();
@@ -54,24 +54,21 @@ public class OutputWriter {
     private static void writeGnuplotScript(String scriptFilename, String pngFilename, InputData input, PlacementResult result) throws IOException {
         int rollWidth = input.rollWidth();
         int ymax = result.totalHeight(); // Use the calculated total height
-        // Add some padding to ymax for better visualization unless it's 0
-        int yRangeMax = (ymax == 0) ? 100 : (int) (ymax * 1.1); // e.g., 10% padding
-         if (yRangeMax < 100) yRangeMax = 100; // Minimum range
 
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(scriptFilename))) {
             writer.write("reset\n");
             // Ensure ymax+100 doesn't cause issues if ymax is huge, use calculated range
             // Size calculation might need adjustment based on desired aspect ratio/clarity
-            writer.write(String.format(Locale.US, "set term png size %d,%d\n", rollWidth, yRangeMax + 100)); // Adjust plot size
+            writer.write(String.format(Locale.US, "set term png size %d,%d\n", rollWidth, ymax + 100)); // Adjust plot size
             writer.write(String.format("set output '%s'\n", pngFilename));
             writer.write(String.format(Locale.US, "set xrange [0:%d]\n", rollWidth));
-            writer.write(String.format(Locale.US, "set yrange [0:%d]\n", yRangeMax));
+            writer.write(String.format(Locale.US, "set yrange [0:%d]\n", ymax));
             writer.write("set size ratio -1\n"); // Maintain aspect ratio (important!)
             writer.newLine();
             // Gnuplot title - use \n for newlines within the title string
             writer.write("set title \"\\\n"); // Start multi-line title
             writer.write(escapeGnuplotString(input.description()) + "\\n\\\n");
-            writer.write(String.format(Locale.US, "Benötigte Länge: %.1fcm\\n\\\n", (double)result.totalHeight() / 10.0));
+            writer.write(String.format(Locale.US, "Benötigte Länge: %.1fcm\\n\\\n", (double) result.totalHeight() / 10.0));
             writer.write(String.format(Locale.US, "Genutzte Fläche: %.2f%%\"\n", result.utilization()));
             writer.newLine();
             writer.write("set style fill transparent solid 0.5 border\n");
@@ -85,8 +82,8 @@ public class OutputWriter {
                     .sorted(Comparator.comparingInt(o -> o.id))
                     .toList();
             for (CustomerOrder order : sortedOrders) {
-                 // Format: x_LU y_LU x_RO y_RO "Description" ID
-                 // Ensure description is properly quoted if it contains spaces
+                // Format: x_LU y_LU x_RO y_RO "Description" ID
+                // Ensure description is properly quoted if it contains spaces
                 writer.write(String.format(Locale.US, "%d %d %d %d \"%s\" %d\n",
                         order.getXLU(), order.getYLU(), order.getXRO(), order.getYRO(),
                         escapeGnuplotString(order.description), order.id));
@@ -96,7 +93,7 @@ public class OutputWriter {
 
             // Data block for remaining docking points (visualized as red circles)
             writer.write("$anchor <<EOD\n");
-             // Sort docking points for consistent output
+            // Sort docking points for consistent output
             List<Point> sortedPoints = result.finalDockingPoints().stream()
                     .sorted(Comparator.comparingInt(Point::y).thenComparingInt(Point::x))
                     .toList();
@@ -109,24 +106,24 @@ public class OutputWriter {
             // Plot commands
             writer.write("plot \\\n");
             // Rectangles with varying color based on order sequence/ID
-             writer.write("'$data' using (($3-$1)/2+$1):(($4-$2)/2+$2):(($3-$1)/2):(($4-$2)/2):6 with boxxy linecolor var, \\\n");
-           // Labels (using center of box) - Column 5 is description, 6 is ID
-             writer.write("'$data' using (($3-$1)/2+$1):(($4-$2)/2+$2):5 with labels font \"arial,9\", \\\n");
-             // Placed Anchor points (green dots)
+            writer.write("'$data' using (($3-$1)/2+$1):(($4-$2)/2+$2):(($3-$1)/2):(($4-$2)/2):6 with boxxy linecolor var, \\\n");
+            // Labels (using center of box) - Column 5 is description, 6 is ID
+            writer.write("'$data' using (($3-$1)/2+$1):(($4-$2)/2+$2):5 with labels font \"arial,9\", \\\n");
+            // Placed Anchor points (green dots)
             writer.write("'$anchor' using 1:2 with circles lc rgb \"red\", \\\n");
-             // Free Docking points (red circles)
+            // Free Docking points (red circles)
             writer.write("'$data' using 1:2 with points lw 8 lc rgb \"dark-green\"\n");
         }
     }
 
-     // Helper to escape strings for gnuplot (e.g., backslashes)
+    // Helper to escape strings for gnuplot (e.g., backslashes)
     private static String escapeGnuplotString(String s) {
         if (s == null) return "";
         // Basic escaping, might need more depending on content
         return s.replace("\\", "").replace("\"", "\\\"").replace("\n", "\\n");
     }
 
-     private static void runGnuplot(String scriptFilename) {
+    private static void runGnuplot(String scriptFilename) {
         try {
             // Ensure gnuplot is in the system's PATH
             ProcessBuilder pb = new ProcessBuilder("C:\\Users\\Andi\\Downloads\\gp602-win64-mingw\\gnuplot\\bin\\gnuplot.exe", scriptFilename);

@@ -10,7 +10,7 @@ public class CustomerOrder {
     public final String description;
 
     // Placement details
-    boolean isPlaced = false;
+    public boolean isPlaced = false;
     public int placedX = -1;
     public int placedY = -1;
     public int currentWidth = -1; // Width after potential rotation
@@ -92,5 +92,9 @@ public class CustomerOrder {
     @Override
     public int hashCode() {
         return Objects.hash(id);
+    }
+
+    public int getId() {
+        return id;
     }
 }
