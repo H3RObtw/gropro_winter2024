@@ -202,7 +202,6 @@ public class PlacementService {
 
                 for (boolean rotate : new boolean[]{false, true}) {
                     int width = rotate ? orderToTry.originalHeight : orderToTry.originalWidth;
-                    int height = rotate ? orderToTry.originalWidth : orderToTry.originalHeight;
 
                     // --- Pruning 3: Docking point + minimum height too high ---
                     // (More aggressive, requires minDimension method)
@@ -239,12 +238,11 @@ public class PlacementService {
 
                         // OPTIMIZATION: Check coverage before adding new points
                         // Need a quick way to check against currentlyPlaced + orderToTry
-                        List<CustomerOrder> potentialBlockers = nextPlaced; // Already includes orderToTry
 
-                        if (newTopLeft.x() <= rollWidth && !isPointCovered(newTopLeft, potentialBlockers)) {
+                        if (newTopLeft.x() <= rollWidth && !isPointCovered(newTopLeft, nextPlaced)) {
                             nextDockingPoints.add(newTopLeft);
                         }
-                        if (newBottomRight.x() <= rollWidth && !isPointCovered(newBottomRight, potentialBlockers)) {
+                        if (newBottomRight.x() <= rollWidth && !isPointCovered(newBottomRight, nextPlaced)) {
                             nextDockingPoints.add(newBottomRight);
                         }
 
