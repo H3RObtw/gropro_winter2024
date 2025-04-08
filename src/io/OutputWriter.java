@@ -11,9 +11,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 import java.util.Comparator;
-import java.util.stream.Collectors;
 
 public class OutputWriter {
 
@@ -131,7 +129,7 @@ public class OutputWriter {
      private static void runGnuplot(String scriptFilename) {
         try {
             // Ensure gnuplot is in the system's PATH
-            ProcessBuilder pb = new ProcessBuilder("gnuplot", scriptFilename);
+            ProcessBuilder pb = new ProcessBuilder("C:\\Users\\Andi\\Downloads\\gp602-win64-mingw\\gnuplot\\bin\\gnuplot.exe", scriptFilename);
             pb.redirectErrorStream(true); // Combine stdout and stderr
             Process process = pb.start();
             // Capture output for debugging

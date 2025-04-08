@@ -1,5 +1,5 @@
 // Auftrag Test 14 - 110 Orders, Depth 15 (EXTREME RUNTIME WARNING)
-900 15
+900 10
 100, 50, 1, T14 P1
 50, 100, 2, T14 P2
 100, 100, 3, T14 P3
