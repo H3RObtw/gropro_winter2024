@@ -97,4 +97,18 @@ public class CustomerOrder {
     public int getId() {
         return id;
     }
+
+    public CustomerOrder copy() {
+        CustomerOrder copy = new CustomerOrder(this.originalWidth, this.originalHeight, this.id, this.description);
+        if (this.isPlaced) {
+            copy.setPlacement(this.placedX, this.placedY, this.isRotated);
+        }
+        return copy;
+    }
+
+    public void updateDerivedPlacementFields() {
+        if (!isPlaced) return;
+        this.currentWidth = this.isRotated ? originalHeight : originalWidth;
+        this.currentHeight = this.isRotated ? originalWidth : originalHeight;
+    }
 }

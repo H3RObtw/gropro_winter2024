@@ -14,22 +14,22 @@ set style fill transparent solid 0.5 border
 set key noautotitle
 
 $data <<EOD
-0 0 100 100 "Auftrag A" 1
-0 100 210 397 "Auftrag B" 2
-210 100 630 397 "Auftrag C" 3
-0 397 880 697 "Auftrag D" 4
-630 100 840 397 "Auftrag E" 5
-100 0 200 100 "Auftrag F" 6
-0 697 210 994 "Auftrag G" 7
-210 697 630 994 "Auftrag H" 8
+0 300 100 400 "Auftrag A" 1
+0 400 210 697 "Auftrag B" 2
+210 400 630 697 "Auftrag C" 3
+0 0 880 300 "Auftrag D" 4
+630 400 840 697 "Auftrag E" 5
+100 300 200 400 "Auftrag F" 6
+420 697 630 994 "Auftrag G" 7
+0 697 420 994 "Auftrag H" 8
 0 994 880 1294 "Auftrag I" 9
 630 697 840 994 "Auftrag J" 10
 EOD
 
 $anchor <<EOD
-200 0
-840 100
-880 397
+880 0
+200 300
+840 400
 840 697
 880 994
 0 1294
