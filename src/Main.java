@@ -41,7 +41,7 @@ public class Main {
 
         // --- Verarbeitung ---
         System.out.println("\nStarting placement optimization...");
-        PlacementService placementService = new PlacementService(inputData.rollWidth());
+        PlacementService placementService = new PlacementService(inputData.rollWidth(), false);
 
         // Implement Timer for performance
         ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();

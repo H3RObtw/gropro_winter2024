@@ -20,14 +20,17 @@ public class PlacementService implements AutoCloseable {
     private final AtomicLong recursiveCallCounter = new AtomicLong(0);
     private final ExecutorService executor;
     private final boolean manageExecutorLifecycle;
-    // OPTIMIZATION: Counter threshold for progress printing
-    private static final long PRINT_PROGRESS_INTERVAL = 50_000_000; // Adjust as needed
+    private final boolean useAreaSortHeuristic; // Flag for sorting heuristic
 
-    public PlacementService(final int rollWidth) {
-        this(rollWidth, Executors.newWorkStealingPool(), true);
+    private static final long PRINT_PROGRESS_INTERVAL = 50_000_000;
+
+    // Constructor to explicitly control heuristic
+    public PlacementService(final int rollWidth, boolean useAreaSortHeuristic) {
+        this(rollWidth, Executors.newWorkStealingPool(), true, useAreaSortHeuristic);
     }
 
-    public PlacementService(final int rollWidth, ExecutorService executorService, boolean manageLifecycle) {
+    // Full constructor allowing external executor and heuristic control
+    public PlacementService(final int rollWidth, ExecutorService executorService, boolean manageLifecycle, boolean useAreaSortHeuristic) {
         if (rollWidth <= 0) {
             throw new IllegalArgumentException("Roll width must be positive.");
         }
@@ -37,6 +40,7 @@ public class PlacementService implements AutoCloseable {
         this.rollWidth = rollWidth;
         this.executor = executorService;
         this.manageExecutorLifecycle = manageLifecycle;
+        this.useAreaSortHeuristic = useAreaSortHeuristic; // Store the flag
         try {
             CustomerOrder.class.getMethod("copy");
             CustomerOrder.class.getMethod("updateDerivedPlacementFields");
@@ -44,6 +48,7 @@ public class PlacementService implements AutoCloseable {
             throw new IllegalStateException("CustomerOrder class must have public copy() and updateDerivedPlacementFields() methods.", e);
         }
     }
+
 
     @Override
     public void close() {
@@ -76,30 +81,34 @@ public class PlacementService implements AutoCloseable {
         final List<CustomerOrder> globallyPlacedOrders = new ArrayList<>();
         int globalYOffset = 0;
 
+
         while (!remainingOrders.isEmpty()) {
             final int ordersToOptimize = Math.min(remainingOrders.size(), optimizationDepth);
             final List<CustomerOrder> batchToOptimizeInput = remainingOrders.subList(0, ordersToOptimize);
             final List<CustomerOrder> nextRemainingOrders = new ArrayList<>(remainingOrders.subList(ordersToOptimize, remainingOrders.size()));
 
-            // --- Create COPIES for the batch ---
             List<CustomerOrder> batchToOptimize = batchToOptimizeInput
                     .stream()
-                    .map(CustomerOrder::copy).sorted(Comparator.comparingDouble((CustomerOrder o) ->
-                            (double) o.originalWidth * o.originalHeight).reversed()).collect(Collectors.toList());
+                    .map(CustomerOrder::copy)
+                    .collect(Collectors.toList());
 
-            // --- OPTIMIZATION 1: Sort batch by area descending ---
-            // Place larger items first (heuristic)
-            // --- End Optimization 1 ---
+            // --- OPTIONAL OPTIMIZATION 1: Sort batch by area descending ---
+            String sortInfo = "";
+            if (this.useAreaSortHeuristic) {
+                batchToOptimize.sort(Comparator.comparingDouble((CustomerOrder o) ->
+                        (double)o.originalWidth * o.originalHeight).reversed());
+                sortInfo = " (sorted by area desc)";
+            }
+            // --- End Optional Optimization 1 ---
 
             final Set<Point> batchStartDockingPoints = Set.of(new Point(0, 0));
 
-            System.out.printf("Optimizing batch of %d orders (sorted by area desc) starting at global Y=%d.%n",
-                    batchToOptimize.size(), globalYOffset);
+            System.out.printf("Optimizing batch of %d orders%s starting at global Y=%d.%n",
+                    batchToOptimize.size(), sortInfo, globalYOffset); // Include sort info in log
 
             final long batchStartCounterValue = this.recursiveCallCounter.get();
-            bestBatchResultRef.set(null); // Reset best result for this batch
+            bestBatchResultRef.set(null);
 
-            // Launch the top-level recursive call for the batch
             recursivePlace(batchToOptimize, Collections.emptyList(), batchStartDockingPoints);
 
             final long batchCalls = this.recursiveCallCounter.get() - batchStartCounterValue;
@@ -108,44 +117,38 @@ public class PlacementService implements AutoCloseable {
             PlacementResult currentBestBatch = bestBatchResultRef.get();
 
             if (currentBestBatch == null) {
-                System.err.printf("Warning: No valid placement found for batch (sorted) starting at Y=%d. Adding originals back and stopping.%n", globalYOffset);
-                // Add the orders we tried to optimize back to the remaining list
-                // If we stop, they become unplaced. If we continue, they'll be tried in the next batch.
-                remainingOrders = new ArrayList<>(batchToOptimizeInput); // Use originals
+                System.err.printf("Warning: No valid placement found for batch%s starting at Y=%d. Adding originals back and stopping.%n", sortInfo, globalYOffset);
+                remainingOrders = new ArrayList<>(batchToOptimizeInput);
                 remainingOrders.addAll(nextRemainingOrders);
-                // Decide whether to stop entirely or just skip placing this batch
-                break; // Stop optimization entirely if one batch fails
-                // continue; // Or uncomment this to try the next batch (after adding back)
+                break; // Stop optimization
             }
 
             System.out.printf("Batch finished. Best relative height: %d. Orders placed: %d%n",
                     currentBestBatch.totalHeight(), currentBestBatch.placedOrders().size());
 
-            // Add copies of successfully placed orders from the batch result to the global list
+            // --- Add results to global list (remains the same) ---
             Set<Integer> placedInBatchIds = new HashSet<>();
             for (final CustomerOrder batchPlacedOrder : currentBestBatch.placedOrders()) {
-                CustomerOrder globalOrder = batchPlacedOrder.copy(); // Copy from result
-                globalOrder.placedY += globalYOffset; // Adjust Y
-                globalOrder.updateDerivedPlacementFields(); // Update derived coords
+                CustomerOrder globalOrder = batchPlacedOrder.copy();
+                globalOrder.placedY += globalYOffset;
+                globalOrder.updateDerivedPlacementFields();
                 globallyPlacedOrders.add(globalOrder);
                 placedInBatchIds.add(globalOrder.getId());
             }
 
-            // Update global Y offset
+            // --- Update global Y offset (remains the same) ---
             globalYOffset = globallyPlacedOrders.stream()
                     .mapToInt(CustomerOrder::getYRO)
                     .max()
                     .orElse(globalYOffset);
 
-            // Prepare the list of remaining orders for the next iteration
-            // Start with orders skipped in this batch optimization (use originals based on ID)
+            // --- Prepare remaining orders (remains the same) ---
             List<CustomerOrder> ordersNotPlacedInBatch = batchToOptimizeInput.stream()
                     .filter(o -> !placedInBatchIds.contains(o.getId()))
                     .toList();
 
             remainingOrders = new ArrayList<>(ordersNotPlacedInBatch);
             remainingOrders.addAll(nextRemainingOrders);
-
 
         } // End while loop
 
@@ -177,26 +180,28 @@ public class PlacementService implements AutoCloseable {
                 finalAbsoluteDockingPoints, finalMaxY, utilization);
     }
 
-    private void recursivePlace(final List<CustomerOrder> ordersToPlace,   // Immutable List<OrderCopy>
-                                final List<CustomerOrder> currentlyPlaced, // Immutable List<OrderCopy>
-                                final Set<Point> availableDockingPoints   // Immutable Set<Point>
+    // --- recursivePlace Method ---
+    // The internal logic of recursivePlace, including the stronger docking point
+    // pruning (Opt 2b using minRemainingHeight), remains UNCHANGED from the
+    // previous version. We assume that pruning optimization is safe.
+    private void recursivePlace(final List<CustomerOrder> ordersToPlace,
+                                final List<CustomerOrder> currentlyPlaced,
+                                final Set<Point> availableDockingPoints
     ) {
         long currentCallCount = this.recursiveCallCounter.incrementAndGet();
-        PlacementResult currentBest = bestBatchResultRef.get(); // Read once per invocation (or when needed)
+        PlacementResult currentBest = bestBatchResultRef.get();
 
-        // Progress Printing (less frequent potentially)
-        // Check against a running total, not just modulo, for less frequent batch prints
-        // This part seems less critical now, focus on pruning logic.
         if (currentCallCount > 0 && currentCallCount % PRINT_PROGRESS_INTERVAL == 0) {
             System.out.printf("...recursive calls: %,d (Current best height: %d)%n",
                     currentCallCount, currentBest != null ? currentBest.totalHeight() : -1);
         }
 
-        // --- Base Case ---
+        // --- Base Case --- (No change)
         if (ordersToPlace.isEmpty()) {
+            // ... (same as before) ...
             final int currentRelativeMaxY = currentlyPlaced.stream().mapToInt(CustomerOrder::getYRO).max().orElse(0);
             PlacementResult potentialResult = new PlacementResult(
-                    currentlyPlaced.stream().map(CustomerOrder::copy).toList(), // Result needs own copies
+                    currentlyPlaced.stream().map(CustomerOrder::copy).toList(),
                     Set.copyOf(availableDockingPoints),
                     currentRelativeMaxY,
                     0.0
@@ -209,32 +214,34 @@ public class PlacementService implements AutoCloseable {
             return;
         }
 
-        // --- Pruning 1: Intermediate Height ---
+        // --- Pruning 1: Intermediate Height --- (No change)
         if (currentBest != null && !currentlyPlaced.isEmpty()) {
+            // ... (same as before) ...
             final int intermediateMaxY = currentlyPlaced.stream().mapToInt(CustomerOrder::getYRO).max().getAsInt();
             if (intermediateMaxY >= currentBest.totalHeight()) {
-                return; // Prune this branch
+                return;
             }
         }
+
 
         // --- Recursive Step ---
 
         if (currentlyPlaced.isEmpty()) {
-            // --- INITIAL PLACEMENT (Parallel) ---
-            // (Logic remains largely the same, still parallelizing the first choice)
+            // --- INITIAL PLACEMENT (Parallel) --- (No change)
+            // ... (same logic for parallel initial placement as before) ...
             final Point initialDockPoint = new Point(0, 0);
             if (!availableDockingPoints.contains(initialDockPoint)) {
                 System.err.println("Error: Initial dock point (0,0) missing."); return;
             }
 
             List<CompletableFuture<Void>> futures = new ArrayList<>();
-            for (int i = 0; i < ordersToPlace.size(); i++) { // Still iterate through all possibilities for the *first* item
+            for (int i = 0; i < ordersToPlace.size(); i++) {
                 final CustomerOrder orderToConsider = ordersToPlace.get(i);
 
                 final List<CustomerOrder> remainingForNextCall = new ArrayList<>(ordersToPlace.size() - 1);
                 if (i > 0) remainingForNextCall.addAll(ordersToPlace.subList(0, i));
                 if (i < ordersToPlace.size() - 1) remainingForNextCall.addAll(ordersToPlace.subList(i + 1, ordersToPlace.size()));
-                final List<CustomerOrder> immutableRemaining = List.copyOf(remainingForNextCall); // Pass immutable list
+                final List<CustomerOrder> immutableRemaining = List.copyOf(remainingForNextCall);
 
                 for (final boolean rotate : new boolean[]{false, true}) {
                     final int width = rotate ? orderToConsider.originalHeight : orderToConsider.originalWidth;
@@ -242,14 +249,14 @@ public class PlacementService implements AutoCloseable {
 
                     if (initialDockPoint.x() + width > this.rollWidth) continue;
 
-                    PlacementResult currentBestForPruning = bestBatchResultRef.get(); // Read fresh best value
+                    PlacementResult currentBestForPruning = bestBatchResultRef.get();
                     if (currentBestForPruning != null && initialDockPoint.y() + height >= currentBestForPruning.totalHeight()) {
                         continue;
                     }
 
                     final CustomerOrder placedOrderCopy = orderToConsider.copy();
                     placedOrderCopy.setPlacement(initialDockPoint.x(), initialDockPoint.y(), rotate);
-                    final List<CustomerOrder> nextPlaced = List.of(placedOrderCopy); // Immutable list
+                    final List<CustomerOrder> nextPlaced = List.of(placedOrderCopy);
 
                     final Set<Point> nextDockingPoints = new HashSet<>(2);
                     final Point newTopLeft = new Point(placedOrderCopy.getXLU(), placedOrderCopy.getYRO());
@@ -259,27 +266,28 @@ public class PlacementService implements AutoCloseable {
                     if (newBottomRight.x() <= this.rollWidth && !isPointCovered(newBottomRight, nextPlaced)) nextDockingPoints.add(newBottomRight);
                     final Set<Point> immutableNextDocking = Set.copyOf(nextDockingPoints);
 
-                    CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                        recursivePlace(immutableRemaining, nextPlaced, immutableNextDocking);
-                    }, executor);
+                    CompletableFuture<Void> future = CompletableFuture.runAsync(() ->
+                        recursivePlace(immutableRemaining, nextPlaced, immutableNextDocking), executor);
                     futures.add(future);
 
-                    if (orderToConsider.originalWidth == orderToConsider.originalHeight) break; // Opt: Skip rotation if square
+                    if (orderToConsider.originalWidth == orderToConsider.originalHeight) break;
                 }
             }
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
+
         } else {
             // --- SUBSEQUENT PLACEMENTS (Sequential within this branch) ---
-            final CustomerOrder orderToTry = ordersToPlace.getFirst(); // Get next order (because list was sorted)
-            final List<CustomerOrder> remainingForNextCall = ordersToPlace.subList(1, ordersToPlace.size()); // Immutable view
+            // Includes stronger pruning (Opt 2b), but no sorting here (list order is fixed)
+            // ... (logic remains exactly the same as previous version, including minRemainingHeight calc and pruning) ...
 
-            // --- OPTIMIZATION 2a: Calculate min height of any remaining order ONCE ---
-            final int minRemainingHeight = ordersToPlace.stream() // Includes orderToTry and others
+            final CustomerOrder orderToTry = ordersToPlace.getFirst();
+            final List<CustomerOrder> remainingForNextCall = ordersToPlace.subList(1, ordersToPlace.size());
+
+            final int minRemainingHeight = ordersToPlace.stream()
                     .mapToInt(o -> Math.min(o.originalWidth, o.originalHeight))
                     .min()
-                    .orElse(Integer.MAX_VALUE); // Use MAX_VALUE if list is somehow empty
-            // --- End Optimization 2a ---
+                    .orElse(Integer.MAX_VALUE);
 
 
             final List<Point> sortedDockingPoints = availableDockingPoints.stream()
@@ -287,51 +295,38 @@ public class PlacementService implements AutoCloseable {
                     .toList();
 
             for (final Point dockPoint : sortedDockingPoints) {
-                PlacementResult currentBestForPruning = bestBatchResultRef.get(); // Re-read best result
+                PlacementResult currentBestForPruning = bestBatchResultRef.get();
 
-                // --- Pruning 2: Docking point Y coord itself too high ---
                 if (currentBestForPruning != null && dockPoint.y() >= currentBestForPruning.totalHeight()) {
-                    break; // Points sorted by Y, no further point can be better
-                }
-
-                // --- OPTIMIZATION 2b: Stronger Docking Point Pruning ---
-                // If placing ANY remaining item (even the shortest) at this dock point
-                // would exceed the best height, then skip this dock point entirely.
-                if (currentBestForPruning != null && minRemainingHeight != Integer.MAX_VALUE &&
-                        dockPoint.y() + minRemainingHeight >= currentBestForPruning.totalHeight()) {
-                    // Because points are sorted by Y, all subsequent points will also fail this check.
                     break;
                 }
-                // --- End Optimization 2b ---
+
+                if (currentBestForPruning != null && minRemainingHeight != Integer.MAX_VALUE &&
+                        dockPoint.y() + minRemainingHeight >= currentBestForPruning.totalHeight()) {
+                    break; // Stronger prune Opt 2b
+                }
 
 
                 for (final boolean rotate : new boolean[]{false, true}) {
                     final int width = rotate ? orderToTry.originalHeight : orderToTry.originalWidth;
                     final int height = rotate ? orderToTry.originalWidth : orderToTry.originalHeight;
 
-                    // Pruning 3 (Lower bound check specific to *this* order/rotation)
-                    // Note: This is slightly redundant now with Opt 2b, but still useful
-                    // as the specific item might be taller than minRemainingHeight.
-                    final int currentItemMinDim = Math.min(width, height); // Use dimensions for *this* rotation
-                    currentBestForPruning = bestBatchResultRef.get(); // Re-read needed? Maybe not critical here.
+                    final int currentItemMinDim = Math.min(width, height);
+                    currentBestForPruning = bestBatchResultRef.get();
                     if (currentBestForPruning != null && dockPoint.y() + currentItemMinDim >= currentBestForPruning.totalHeight()) {
                         continue;
                     }
 
-                    // Check width bounds
                     if (dockPoint.x() + width > this.rollWidth) continue;
 
-                    // Check height bounds (specific to this order/rotation)
-                    currentBestForPruning = bestBatchResultRef.get(); // Re-read just in case
+                    currentBestForPruning = bestBatchResultRef.get();
                     if (currentBestForPruning != null && dockPoint.y() + height >= currentBestForPruning.totalHeight()) {
                         continue;
                     }
 
-                    // --- Create Candidate Copy ---
                     final CustomerOrder candidateOrder = orderToTry.copy();
                     candidateOrder.setPlacement(dockPoint.x(), dockPoint.y(), rotate);
 
-                    // --- Check Overlap ---
                     boolean overlaps = false;
                     for (final CustomerOrder placed : currentlyPlaced) {
                         if (candidateOrder.overlaps(placed)) {
@@ -341,7 +336,6 @@ public class PlacementService implements AutoCloseable {
                     }
 
                     if (!overlaps) {
-                        // --- Prepare state for recursive call (using immutable copies) ---
                         List<CustomerOrder> nextPlaced = new ArrayList<>(currentlyPlaced.size() + 1);
                         nextPlaced.addAll(currentlyPlaced);
                         nextPlaced.add(candidateOrder);
@@ -361,23 +355,20 @@ public class PlacementService implements AutoCloseable {
                         }
                         Set<Point> immutableNextDocking = Set.copyOf(nextDockingPoints);
 
-                        // --- Make the recursive call ---
                         recursivePlace(remainingForNextCall, immutableNextPlaced, immutableNextDocking);
                     }
 
-                    // Opt: Skip rotation if square
                     if (orderToTry.originalWidth == orderToTry.originalHeight) break;
-
-                } // End rotation loop
-            } // End docking point loop
-        } // End else (subsequent placements)
-    } // End recursivePlace
+                }
+            }
+        }
+    }
 
 
     // --- Static Helpers (isPointCovered, calculateDockingPoints) remain the same ---
     /** Static helper, checks coverage against a list of placed orders */
     private static boolean isPointCovered(final Point p, final List<CustomerOrder> orders) {
-        // ... (no changes needed)
+        // ... (no change) ...
         for (final CustomerOrder order : orders) {
             if (p.x() >= order.getXLU() && p.x() < order.getXRO() &&
                     p.y() >= order.getYLU() && p.y() < order.getYRO()) {
@@ -389,7 +380,7 @@ public class PlacementService implements AutoCloseable {
 
     /** Static helper, calculates valid docking points */
     private static Set<Point> calculateDockingPoints(final List<CustomerOrder> placedOrders, final int rollWidth) {
-        // ... (no changes needed, the existing logic seems okay)
+        // ... (no change) ...
         if (placedOrders.isEmpty()) {
             return Set.of(new Point(0, 0));
         }
@@ -398,7 +389,7 @@ public class PlacementService implements AutoCloseable {
         potentialPoints.add(new Point(0,0));
 
         for (final CustomerOrder order : placedOrders) {
-            if (order.isPlaced) { // Ensure it's actually placed
+            if (order.isPlaced) {
                 potentialPoints.add(new Point(order.getXLU(), order.getYRO()));
                 potentialPoints.add(new Point(order.getXRO(), order.getYLU()));
             }
@@ -406,7 +397,7 @@ public class PlacementService implements AutoCloseable {
 
         final Set<Point> validPoints = new HashSet<>();
         for (final Point p : potentialPoints) {
-            if (p.x() < 0 || p.x() >= rollWidth || p.y() < 0) continue; // X must be strictly < rollWidth to start placement
+            if (p.x() < 0 || p.x() >= rollWidth || p.y() < 0) continue;
 
             if (!isPointCovered(p, placedOrders)) {
                 validPoints.add(p);
